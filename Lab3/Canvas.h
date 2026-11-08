@@ -6,7 +6,11 @@
 #include <QTransform>
 #include <vector>
 
-
+// Замкнутый контур из N кубических кривых Безье.
+// pts_[3i]   - опорная точка A_i
+// pts_[3i+1] - первая контрольная точка сегмента i
+// pts_[3i+2] - вторая контрольная точка сегмента i
+// конец сегмента i = pts_[(3i+3) % (3N)] (следующая опорная точка)
 class Canvas : public QWidget {
     Q_OBJECT
 public:
@@ -15,7 +19,7 @@ public:
 public slots:
     void setShowPolygon(bool on);
     void setSmoothJoints(bool on);
-    void setTension(int percent);  
+    void setTension(int percent);   // 100 = 1.0
     void toggleAnimation();
     void loadBackground();
     void rotate(double deg);
@@ -34,7 +38,6 @@ private:
     std::vector<QPointF> currentPoints() const;
     std::vector<QPointF> buildTriangleTarget() const;
     QPointF centroid() const;
-    void applyTransform(const QTransform& t);
     int hitTest(const QPointF& p) const;
 
     std::vector<QPointF> pts_;

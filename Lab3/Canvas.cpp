@@ -4,10 +4,12 @@
 #include <QFileDialog>
 #include <QtMath>
 #include <algorithm>
+#include <array>
+#include <cmath>
 
 namespace {
 
-
+// Кубическая кривая Безье в базисе Бернштейна
 QPointF bezier3(const QPointF& a, const QPointF& b, const QPointF& c, const QPointF& d, double t) {
     const double u = 1.0 - t;
     const double b0 = u * u * u;
@@ -17,12 +19,12 @@ QPointF bezier3(const QPointF& a, const QPointF& b, const QPointF& c, const QPoi
     return a * b0 + b * b1 + c * b2 + d * b3;
 }
 
-
+// Масштаб и смещение начальных координат дельфина
 constexpr double kScale = 3.5;
 const QPointF kOffset(70, 20);
-constexpr double kBgWidth = 187;
+constexpr double kBgWidth = 187;  // ширина dolphin.png в "исходных" координатах
 
-}
+}  // namespace
 
 Canvas::Canvas(QWidget* parent) : QWidget(parent) {
     setMinimumSize(820, 680);
@@ -37,9 +39,10 @@ Canvas::Canvas(QWidget* parent) : QWidget(parent) {
     });
 }
 
-
+// ---------- Начальная форма: дельфин (приблизительные опорные точки) ----------
 void Canvas::resetShape() {
     if (animating_) toggleAnimation();
+    // Опорні точки силуету дельфіна, зняті автотрасуванням з dolphin.png
     static const QPointF raw[] = {
         {9.2, 99.0},
         {15.6, 88.0},
@@ -105,6 +108,7 @@ void Canvas::resetShape() {
     };
     auto len = [](QPointF v) { return std::hypot(v.x(), v.y()); };
 
+    // Напрямок дотичної в кожній опорній точці + ознака "гострий кут"
     std::vector<QPointF> dir(n);
     std::vector<bool> corner(n, false);
     for (int i = 0; i < n; ++i) {
@@ -115,7 +119,7 @@ void Canvas::resetShape() {
         corner[i] = cosang < 0.5;  // поворот більше ~60 градусів
         dir[i] = norm(a + b);
     }
-
+    // Довжина дотичної = 1/3 довжини сегмента (без перерегулювання)
     for (int i = 0; i < n; ++i) {
         const int j = (i + 1) % n;
         const QPointF seg = A[j] - A[i];
@@ -131,6 +135,8 @@ void Canvas::resetShape() {
 void Canvas::setShowPolygon(bool on) { showPolygon_ = on; update(); }
 void Canvas::setSmoothJoints(bool on) { smooth_ = on; }
 
+// Параметр кривой: "натяжение" - масштаб длины касательных (контрольные точки
+// приближаются/удаляются от своей опорной точки).
 void Canvas::setTension(int percent) {
     if (animating_) return;
     const double k = std::max(0.05, percent / 100.0);
@@ -146,6 +152,7 @@ void Canvas::setTension(int percent) {
     update();
 }
 
+// ---------- Анимация: дельфин -> треугольник и обратно ----------
 std::vector<QPointF> Canvas::buildTriangleTarget() const {
     double minX = 1e9, maxX = -1e9, minY = 1e9, maxY = -1e9;
     for (const auto& p : pts_) {
@@ -159,7 +166,7 @@ std::vector<QPointF> Canvas::buildTriangleTarget() const {
         len[i] = std::hypot(d.x(), d.y());
         total += len[i];
     }
-    auto pointAt = [&](double f) {
+    auto pointAt = [&](double f) {  // f in [0,1) - доля периметра
         double dist = f * total;
         for (int i = 0; i < 3; ++i) {
             if (dist <= len[i] || i == 2) {
@@ -200,6 +207,41 @@ std::vector<QPointF> Canvas::currentPoints() const {
     return r;
 }
 
+// ---------- Евклідові перетворення (матриці 3x3, однорідні координати) ----------
+//  [x']   [ a  b  tx ] [x]
+//  [y'] = [ c  d  ty ] [y]
+//  [1 ]   [ 0  0  1  ] [1]
+namespace {
+using Mat3 = std::array<std::array<double, 3>, 3>;
+
+Mat3 mul(const Mat3& A, const Mat3& B) {
+    Mat3 R{};
+    for (int i = 0; i < 3; ++i)
+        for (int j = 0; j < 3; ++j)
+            for (int k = 0; k < 3; ++k) R[i][j] += A[i][k] * B[k][j];
+    return R;
+}
+// Перенос:   x' = x + tx,  y' = y + ty
+Mat3 translation(double tx, double ty) { return {{{1, 0, tx}, {0, 1, ty}, {0, 0, 1}}}; }
+// Поворот:   x' = x*cos(f) - y*sin(f),  y' = x*sin(f) + y*cos(f)
+Mat3 rotation(double deg) {
+    const double f = qDegreesToRadians(deg), c = std::cos(f), s = std::sin(f);
+    return {{{c, -s, 0}, {s, c, 0}, {0, 0, 1}}};
+}
+// Відображення: sx=-1, sy=1 (відносно вертикалі) або sx=1, sy=-1 (відносно горизонталі)
+Mat3 scaling(double sx, double sy) { return {{{sx, 0, 0}, {0, sy, 0}, {0, 0, 1}}}; }
+// Перетворення відносно точки c:  T(c) * M * T(-c)
+Mat3 aroundPoint(const QPointF& c, const Mat3& M) {
+    return mul(translation(c.x(), c.y()), mul(M, translation(-c.x(), -c.y())));
+}
+void applyMat(std::vector<QPointF>& pts, const Mat3& M) {
+    for (auto& p : pts) {
+        const double x = M[0][0] * p.x() + M[0][1] * p.y() + M[0][2];
+        const double y = M[1][0] * p.x() + M[1][1] * p.y() + M[1][2];
+        p = QPointF(x, y);
+    }
+}
+}  // namespace
 
 QPointF Canvas::centroid() const {
     QPointF c(0, 0);
@@ -208,39 +250,28 @@ QPointF Canvas::centroid() const {
     return c / n;
 }
 
-void Canvas::applyTransform(const QTransform& t) {
+void Canvas::rotate(double deg) {
     if (animating_) return;
-    for (auto& p : pts_) p = t.map(p);
+    applyMat(pts_, aroundPoint(centroid(), rotation(deg)));
     update();
 }
 
-void Canvas::rotate(double deg) {
-    const QPointF c = centroid();
-    QTransform t;
-    t.translate(c.x(), c.y());
-    t.rotate(deg);
-    t.translate(-c.x(), -c.y());
-    applyTransform(t);
-}
-
 void Canvas::flipH() {
-    const QPointF c = centroid();
-    QTransform t;
-    t.translate(c.x(), 0); t.scale(-1, 1); t.translate(-c.x(), 0);
-    applyTransform(t);
+    if (animating_) return;
+    applyMat(pts_, aroundPoint(centroid(), scaling(-1, 1)));
+    update();
 }
 
 void Canvas::flipV() {
-    const QPointF c = centroid();
-    QTransform t;
-    t.translate(0, c.y()); t.scale(1, -1); t.translate(0, -c.y());
-    applyTransform(t);
+    if (animating_) return;
+    applyMat(pts_, aroundPoint(centroid(), scaling(1, -1)));
+    update();
 }
 
 void Canvas::move(double dx, double dy) {
-    QTransform t;
-    t.translate(dx, dy);
-    applyTransform(t);
+    if (animating_) return;
+    applyMat(pts_, translation(dx, dy));
+    update();
 }
 
 void Canvas::loadBackground() {
@@ -250,7 +281,7 @@ void Canvas::loadBackground() {
     update();
 }
 
-
+// ---------- Отрисовка ----------
 void Canvas::paintEvent(QPaintEvent*) {
     QPainter p(this);
     p.setRenderHint(QPainter::Antialiasing);
@@ -267,7 +298,7 @@ void Canvas::paintEvent(QPaintEvent*) {
     const int m = static_cast<int>(P.size());
     const int n = m / 3;
 
-
+    // Характеристический многоугольник
     if (showPolygon_) {
         p.setPen(QPen(QColor(170, 170, 170), 1));
         for (int i = 0; i < n; ++i) {
@@ -277,7 +308,7 @@ void Canvas::paintEvent(QPaintEvent*) {
         }
     }
 
-
+    // Сама кривая: каждый сегмент по формуле Бернштейна
     p.setPen(QPen(Qt::black, 2));
     for (int i = 0; i < n; ++i) {
         QPolygonF poly;
@@ -286,7 +317,7 @@ void Canvas::paintEvent(QPaintEvent*) {
         p.drawPolyline(poly);
     }
 
-
+    // Точки
     if (showPolygon_) {
         p.setPen(Qt::NoPen);
         for (int i = 0; i < m; ++i) {
@@ -297,7 +328,7 @@ void Canvas::paintEvent(QPaintEvent*) {
     }
 }
 
-
+// ---------- Редактирование точек мышью ----------
 int Canvas::hitTest(const QPointF& p) const {
     int best = -1;
     double bestD = 10.0;
@@ -319,14 +350,14 @@ void Canvas::mouseMoveEvent(QMouseEvent* e) {
     const int m = static_cast<int>(pts_.size());
     const QPointF p = e->position();
     if (drag_ % 3 == 0) {
-
+        // опорная точка тянет за собой обе соседние контрольные
         const QPointF d = p - pts_[drag_];
         pts_[drag_] = p;
         pts_[(drag_ + 1) % m] += d;
         pts_[(drag_ + m - 1) % m] += d;
     } else {
         pts_[drag_] = p;
-        if (smooth_) {  
+        if (smooth_) {  // C1-гладкость: противоположная контрольная точка зеркально
             int anchor, opp;
             if (drag_ % 3 == 1) { anchor = drag_ - 1; opp = (drag_ - 2 + m) % m; }
             else                { anchor = (drag_ + 1) % m; opp = (drag_ + 2) % m; }
